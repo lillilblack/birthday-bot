@@ -7,6 +7,7 @@
     "start": "bun run src/index.ts",
     "get-token": "bun run scripts/get-token.ts",
     "check": "bun run src/check.ts",
+    "check-expiry": "bun run src/check-expiry.ts",
     "listen": "bun run src/listener.ts"
   },
   "devDependencies": {

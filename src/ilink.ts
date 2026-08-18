@@ -13,13 +13,22 @@ const TYPING_START = 1;
 const TYPING_STOP = 2;
 // typing_ticket 有效期约 10 分钟，提前 1 分钟刷新，避免复用已失效的 ticket。
 const TYPING_TICKET_TTL_MS = 9 * 60 * 1000;
+// context_token 约 24h 过期、只有用户发消息才刷新；超过该小时数就主动提醒用户续命。
+const DEFAULT_EXPIRY_REMIND_HOURS = 16;
 // 运行时状态用于跨次执行复用 context_token/get_updates_buf。
 const RUNTIME_FILE = ".runtime/state.json";
+
+const EXPIRY_REMINDER_TEXT = [
+  "⚠️ 我已经超过 16 小时没收到你的消息，快要掉线啦～",
+  "随便回我一句（比如「在吗」）就能让我继续正常工作 🙏",
+].join("\n");
 
 interface RuntimeState {
   contextToken?: string;
   getUpdatesBuf?: string;
   updatedAt?: string;
+  lastUserMessageAt?: string;
+  lastExpiryReminderAt?: string;
 }
 
 function generateWechatUin() {
@@ -136,11 +145,17 @@ export async function fetchLatestContextToken() {
     const latestMsg = pickLatestContextMessage(msgs, toUserId);
     const latestContextToken = latestMsg?.context_token || oldContextToken;
     const latestGetUpdatesBuf = resp.get_updates_buf || getUpdatesBuf;
+    // 有新消息时记录用户最后发言时间，作为 token 过期计时起点。
+    const lastUserMessageAt = latestMsg
+      ? new Date(latestMsg.create_time_ms ?? Date.now()).toISOString()
+      : runtimeState.lastUserMessageAt;
 
     // 无论是否有新消息，都更新游标与最近可用 token，保证下次增量拉取连续。
     await writeRuntimeState({
       contextToken: latestContextToken,
       getUpdatesBuf: latestGetUpdatesBuf,
+      lastUserMessageAt,
+      lastExpiryReminderAt: runtimeState.lastExpiryReminderAt,
       updatedAt: new Date().toISOString(),
     });
 
@@ -408,8 +423,106 @@ export async function checkAndReply(): Promise<void> {
   await writeRuntimeState({
     contextToken: latestContextToken,
     getUpdatesBuf: newGetUpdatesBuf,
+    lastUserMessageAt: state.lastUserMessageAt,
+    lastExpiryReminderAt: state.lastExpiryReminderAt,
     updatedAt: new Date().toISOString(),
   });
 
   console.log(`检查完成：收到 ${msgs.length} 条消息，回复 ${replied} 条`);
+}
+
+function expiryRemindThresholdMs(): number {
+  const raw = process.env.EXPIRY_REMIND_HOURS;
+  const parsed = raw === undefined ? DEFAULT_EXPIRY_REMIND_HOURS : Number(raw);
+  const hours =
+    Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_EXPIRY_REMIND_HOURS;
+  return hours * 60 * 60 * 1000;
+}
+
+/**
+ * 检查 context_token 是否接近过期，是则给用户发一条「回我一句续命」的提醒。
+ * 供云端每 6 小时跑一次；只有用户发消息才能刷新 token，所以用「最后发言时间」计时。
+ */
+export async function checkExpiry(): Promise<void> {
+  const token = requireEnv("ILINK_TOKEN");
+  const toUserId = requireEnv("TO_USER_ID");
+  const state = await readRuntimeState();
+
+  const getUpdatesBuf = state.getUpdatesBuf || "";
+  let newGetUpdatesBuf = getUpdatesBuf;
+  let latestContextToken = state.contextToken;
+  let lastUserMessageAt = state.lastUserMessageAt;
+  let lastExpiryReminderAt = state.lastExpiryReminderAt;
+
+  // 1) 拉最新消息：若用户刚发过消息，就刷新 token 并重置计时。
+  try {
+    const resp = (await fetch(`${BASE}/ilink/bot/getupdates`, {
+      method: "POST",
+      headers: getHeaders(token),
+      body: JSON.stringify({
+        get_updates_buf: getUpdatesBuf,
+        base_info: { channel_version: CHANNEL_VERSION },
+      }),
+      signal: AbortSignal.timeout(GET_UPDATES_TIMEOUT_MS),
+    }).then((r) => r.json())) as ILinkGetUpdatesResponse;
+
+    if (resp.get_updates_buf) newGetUpdatesBuf = resp.get_updates_buf;
+
+    let newestMessageTime: number | null = null;
+    for (const msg of resp.msgs ?? []) {
+      if (msg.message_type !== 1) continue;
+      if (!msg.context_token) continue;
+      if (msg.from_user_id !== toUserId) continue;
+
+      const t = msg.create_time_ms ?? Date.now();
+      if (newestMessageTime === null || t > newestMessageTime) {
+        newestMessageTime = t;
+      }
+      latestContextToken = msg.context_token;
+    }
+
+    if (newestMessageTime !== null) {
+      lastUserMessageAt = new Date(newestMessageTime).toISOString();
+    }
+  } catch (error) {
+    console.log("checkExpiry 拉取消息失败，本轮跳过:", getErrorMessage(error));
+    return;
+  }
+
+  // 2) 判断是否需要提醒（距离上次发言超过阈值，且本轮尚未提醒过）。
+  const ageMs = lastUserMessageAt
+    ? Date.now() - Date.parse(lastUserMessageAt)
+    : null;
+  const alreadyReminded =
+    lastExpiryReminderAt && lastUserMessageAt
+      ? Date.parse(lastExpiryReminderAt) >= Date.parse(lastUserMessageAt)
+      : false;
+
+  if (
+    ageMs !== null &&
+    ageMs >= expiryRemindThresholdMs() &&
+    !alreadyReminded &&
+    latestContextToken
+  ) {
+    try {
+      await sendMessage(toUserId, latestContextToken, EXPIRY_REMINDER_TEXT);
+      lastExpiryReminderAt = new Date().toISOString();
+      console.log("已发送过期提醒");
+    } catch (error) {
+      console.error("发送过期提醒失败:", getErrorMessage(error));
+    }
+  }
+
+  // 3) 写回状态。
+  await writeRuntimeState({
+    contextToken: latestContextToken,
+    getUpdatesBuf: newGetUpdatesBuf,
+    lastUserMessageAt,
+    lastExpiryReminderAt,
+    updatedAt: new Date().toISOString(),
+  });
+
+  console.log(
+    `过期检查完成：最后发言 ${lastUserMessageAt ?? "未知"}，上次提醒 ${lastExpiryReminderAt ?? "无"}`,
+  );
 }
