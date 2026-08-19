@@ -44,6 +44,7 @@ Bun + TypeScript，走 iLink 微信协议。**纯提醒 + 查询 + 微信自助�
 - `src/types.ts` FamilyMember / ILink 类型；`src/env.ts` requireEnv
 - `scripts/add-member.ts` CLI 新增；`scripts/get-token.ts` 获取凭证
 - `.github/workflows/` birthday.yml（每日）/ check.yml（每 5 分钟）/ expiry-reminder.yml（每 6h）
+- `docs/` 网页版（方案 2）：`index.html`（页面）+ `lunar.mjs`（农历换算）+ `roster.json`（网页名单）；部署说明见 docs/网页部署教程.md
 
 ## 关键逻辑
 - 名单读取：`loadBirthdays()` = 主名单（env 或 birthdays.json）+ overlay 合并，微信自助增改只写 overlay、**不覆盖主名单**。
@@ -53,7 +54,7 @@ Bun + TypeScript，走 iLink 微信协议。**纯提醒 + 查询 + 微信自助�
 - 老 `state.json` 单 `contextToken` 字段首次读取时自动迁成 `users` 表（`migrateState`）；全新部署用 `.env` 的 `CONTEXT_TOKEN` 给 owner 播种。
 
 ## 坑
-- **多用户不可行**：iLink bot 一人一 bot、微信里无分享入口，无法「一个二维码全队扫」（结论见 docs/多用户接入调研结论.md）。`users` 表/群发逻辑保留但实际只有 owner 一人。若要让全队查生日，需另做网页/共享表格，绕开 iLink。
+- **多用户不可行**：iLink bot 一人一 bot、微信里无分享入口，无法「一个二维码全队扫」（结论见 docs/多用户接入调研结论.md）。`users` 表/群发逻辑保留但实际只有 owner 一人。全队查生日已做成网页版（`docs/`：index.html + lunar.mjs + roster.json，链接 https://lillilblack.github.io/birthday-bot/，部署说明见 docs/网页部署教程.md）。
 - 本机 Claude Code 的 shell 里没有 bun/node，需用户在自己终端跑；用户用 cmd.exe，跨盘 cd 要加 `/d`。
 - 绑定需 iOS 微信扫码；`BirthdayBotDaily` 任务计划要 PC 在 00:00 开机（StartWhenAvailable，错过会补发）。
 - iLink 是否认国外 IP 未验证；私有仓库免费 2000 分钟/月，check 频率建议改 `*/15`。
