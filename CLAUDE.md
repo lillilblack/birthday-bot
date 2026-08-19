@@ -7,7 +7,7 @@ Bun + TypeScript，走 iLink 微信协议。**纯提醒 + 查询 + 微信自助�
 - 每天 00:00（北京时间）发「今天/明天谁生日」提醒；无人生日则静默跳过。
 - 微信指令：查询生日 + 自助新增/修改生日。
 - 支持阳历（solar）+ 农历（lunar）。
-- **多用户**：一个机器人服务全队。任何人扫码给机器人发过消息，就会自动记录其 `to_user_id`+`context_token`；查询/增改即时可用，每日提醒会群发给所有绑定过的人。
+- **单用户**：iLink bot 是「个人机器人」，一人一 bot，微信里没有分享入口，无法多人扫码加入（结论见 docs/多用户接入调研结论.md）。代码里的 `users` 表/群发逻辑是官方多用户 API 模型，但实际只有 owner 一个用户，降级为单人使用。
 
 ## 运行命令（bun）
 | 命令 | 作用 |
@@ -20,7 +20,7 @@ Bun + TypeScript，走 iLink 微信协议。**纯提醒 + 查询 + 微信自助�
 | `bun run get-token` | 获取微信凭证 |
 
 ## 凭证 / 数据
-- `.env`：`ILINK_TOKEN` / `TO_USER_ID` / `CONTEXT_TOKEN`（.gitignore 忽略）—— 这三项是 owner（扫码绑定人）的凭证，仅用于首次启动播种；其他队员无需配置，发消息后自动加入
+- `.env`：`ILINK_TOKEN` / `TO_USER_ID` / `CONTEXT_TOKEN`（.gitignore 忽略）—— 这三项是 owner（扫码绑定人）的凭证，仅用于首次启动播种
 - `birthdays.json`：主名单（58 人：阳历 51 + 农历 7）；`birthdays.example.json` 是格式模板；`birthdays.schema.json` 是字段规范
 - `.runtime/`：运行时状态 —— `state.json`（`users` 表：每个用户各自的 `context_token`/最后发言时间；`get_updates_buf` 账号级游标）、`birthdays-overlay.json`（微信自助增改的成员）
 - 云端（GitHub Actions）：用 `BIRTHDAYS_JSON` Secret 替代 birthdays.json；`.runtime/` 随 Actions Cache 持久化
@@ -53,6 +53,7 @@ Bun + TypeScript，走 iLink 微信协议。**纯提醒 + 查询 + 微信自助�
 - 老 `state.json` 单 `contextToken` 字段首次读取时自动迁成 `users` 表（`migrateState`）；全新部署用 `.env` 的 `CONTEXT_TOKEN` 给 owner 播种。
 
 ## 坑
+- **多用户不可行**：iLink bot 一人一 bot、微信里无分享入口，无法「一个二维码全队扫」（结论见 docs/多用户接入调研结论.md）。`users` 表/群发逻辑保留但实际只有 owner 一人。若要让全队查生日，需另做网页/共享表格，绕开 iLink。
 - 本机 Claude Code 的 shell 里没有 bun/node，需用户在自己终端跑；用户用 cmd.exe，跨盘 cd 要加 `/d`。
 - 绑定需 iOS 微信扫码；`BirthdayBotDaily` 任务计划要 PC 在 00:00 开机（StartWhenAvailable，错过会补发）。
 - iLink 是否认国外 IP 未验证；私有仓库免费 2000 分钟/月，check 频率建议改 `*/15`。
