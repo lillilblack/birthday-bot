@@ -18,10 +18,20 @@ const EXPIRY_REMINDER_TEXT = [
   "随便回我一句（比如「在吗」）就能让我继续正常工作 🙏",
 ].join("\n");
 
-interface RuntimeState {
+interface UserSession {
   contextToken?: string;
+  lastUserMessageAt?: string;
+  lastExpiryReminderAt?: string;
+}
+
+interface RuntimeState {
+  // 多用户：每个微信用户（key = from_user_id / to_user_id）各存一份会话状态。
+  users?: Record<string, UserSession>;
+  // get_updates_buf 是机器人账号级游标，所有用户共用一份。
   getUpdatesBuf?: string;
   updatedAt?: string;
+  // 以下为历史单用户字段，仅用于首次迁移，迁移后不再写入。
+  contextToken?: string;
   lastUserMessageAt?: string;
   lastExpiryReminderAt?: string;
 }
@@ -45,15 +55,6 @@ function safeJsonParse(text: string) {
   }
 }
 
-function isTimeoutError(error: unknown) {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "name" in error &&
-    (error as { name?: string }).name === "TimeoutError"
-  );
-}
-
 function getErrorMessage(error: unknown) {
   if (error instanceof Error) return error.message;
   return String(error);
@@ -72,31 +73,42 @@ function getHeaders(token: string) {
   };
 }
 
-function pickLatestContextMessage(msgs: ILinkMessage[], toUserId: string) {
-  // 只取目标用户最近的一条文本消息，避免历史消息里的旧 context_token 污染会话。
-  return msgs
-    .filter((msg) => {
-      return (
-        msg.message_type === 1 &&
-        msg.from_user_id === toUserId &&
-        msg.context_token
-      );
-    })
-    .sort((a, b) => {
-      return (b.create_time_ms ?? 0) - (a.create_time_ms ?? 0);
-    })[0];
-}
-
 async function readRuntimeState(): Promise<RuntimeState> {
+  let raw: RuntimeState = {};
   try {
     const file = Bun.file(RUNTIME_FILE);
-
-    if (!(await file.exists())) return {};
-
-    return (await file.json()) as RuntimeState;
+    if (await file.exists()) {
+      raw = (await file.json()) as RuntimeState;
+    }
   } catch {
-    return {};
+    // state.json 损坏时从空状态重建，靠 migrateState 播种 owner。
   }
+  return migrateState(raw);
+}
+
+// 老版本 state.json 只存单个 contextToken，首次读到多用户版本时迁成 users 表；
+// 全新部署（state.json 不存在）则用 .env 里的 CONTEXT_TOKEN 给 owner 播种。
+function migrateState(state: RuntimeState): RuntimeState {
+  if (state.users) return state;
+
+  const ownerId = process.env.TO_USER_ID;
+  const users: Record<string, UserSession> = {};
+
+  if (ownerId && state.contextToken) {
+    users[ownerId] = {
+      contextToken: state.contextToken,
+      lastUserMessageAt: state.lastUserMessageAt,
+      lastExpiryReminderAt: state.lastExpiryReminderAt,
+    };
+  } else if (ownerId && process.env.CONTEXT_TOKEN) {
+    users[ownerId] = { contextToken: process.env.CONTEXT_TOKEN };
+  }
+
+  return {
+    getUpdatesBuf: state.getUpdatesBuf,
+    updatedAt: state.updatedAt,
+    users,
+  };
 }
 
 async function writeRuntimeState(state: RuntimeState) {
@@ -105,81 +117,54 @@ async function writeRuntimeState(state: RuntimeState) {
   await Bun.write(RUNTIME_FILE, `${JSON.stringify(state, null, 2)}\n`);
 }
 
-export async function fetchLatestContextToken() {
+/**
+ * 拉一次 getupdates，把每个刚发过消息的用户的最新 context_token 写进 users 表。
+ * 供每日提醒前调用，尽量刷新到最新 token；失败则沿用已存 token，不阻断后续发送。
+ */
+export async function refreshUserTokens(): Promise<void> {
   const token = requireEnv("ILINK_TOKEN");
-  const toUserId = requireEnv("TO_USER_ID");
-  const runtimeState = await readRuntimeState();
+  const state = await readRuntimeState();
+  const getUpdatesBuf = state.getUpdatesBuf || "";
 
-  // 优先使用缓存状态，其次回退到环境变量中的初始 token。
-  // context_token 不是永久有效，必须持续刷新和回退。
-  const oldContextToken = runtimeState.contextToken || process.env.CONTEXT_TOKEN;
-  // get_updates_buf 是增量游标；每次从空值开始会重复读历史消息。
-  const getUpdatesBuf = runtimeState.getUpdatesBuf || "";
-
-  const headers = getHeaders(token);
+  let newGetUpdatesBuf = getUpdatesBuf;
+  const users = { ...(state.users ?? {}) };
 
   try {
-    console.log("========== 尝试获取最新 context_token ==========");
-
     const resp = (await fetch(`${BASE}/ilink/bot/getupdates`, {
       method: "POST",
-      headers,
+      headers: getHeaders(token),
       body: JSON.stringify({
         get_updates_buf: getUpdatesBuf,
-        base_info: {
-          channel_version: CHANNEL_VERSION,
-        },
+        base_info: { channel_version: CHANNEL_VERSION },
       }),
       signal: AbortSignal.timeout(GET_UPDATES_TIMEOUT_MS),
     }).then((r) => r.json())) as ILinkGetUpdatesResponse;
 
-    console.log("getupdates 返回:");
-    console.log(JSON.stringify(resp, null, 2));
+    if (resp.get_updates_buf) newGetUpdatesBuf = resp.get_updates_buf;
 
-    const msgs = resp.msgs ?? [];
-    const latestMsg = pickLatestContextMessage(msgs, toUserId);
-    const latestContextToken = latestMsg?.context_token || oldContextToken;
-    const latestGetUpdatesBuf = resp.get_updates_buf || getUpdatesBuf;
-    // 有新消息时记录用户最后发言时间，作为 token 过期计时起点。
-    const lastUserMessageAt = latestMsg
-      ? new Date(latestMsg.create_time_ms ?? Date.now()).toISOString()
-      : runtimeState.lastUserMessageAt;
-
-    // 无论是否有新消息，都更新游标与最近可用 token，保证下次增量拉取连续。
-    await writeRuntimeState({
-      contextToken: latestContextToken,
-      getUpdatesBuf: latestGetUpdatesBuf,
-      lastUserMessageAt,
-      lastExpiryReminderAt: runtimeState.lastExpiryReminderAt,
-      updatedAt: new Date().toISOString(),
-    });
-
-    if (!latestContextToken) {
-      throw new Error("没有可用的 CONTEXT_TOKEN，请先给 Bot 发一条消息并初始化");
+    for (const msg of resp.msgs ?? []) {
+      if (msg.message_type !== 1 || !msg.context_token) continue;
+      const prev = users[msg.from_user_id] ?? {};
+      users[msg.from_user_id] = {
+        contextToken: msg.context_token,
+        lastUserMessageAt: new Date(
+          msg.create_time_ms ?? Date.now(),
+        ).toISOString(),
+        lastExpiryReminderAt: prev.lastExpiryReminderAt,
+      };
     }
-
-    if (!latestMsg?.context_token) {
-      console.log("没有新消息，继续使用缓存/Secrets 中的 context_token");
-      return latestContextToken;
-    }
-
-    console.log("✅ 获取到新的 context_token，已写入 cache state");
-    return latestContextToken;
-  } catch (error: unknown) {
-    if (isTimeoutError(error)) {
-      console.log("getupdates 超时，使用缓存/Secrets 中的 context_token");
-    } else {
-      console.log("getupdates 失败，使用缓存/Secrets 中的 context_token");
-      console.log(getErrorMessage(error));
-    }
-
-    // 没有任何可用 token 时直接失败，提示用户先做一次绑定初始化。
-    if (!oldContextToken) {
-      throw new Error("没有可用的 CONTEXT_TOKEN，请先给 Bot 发一条消息并初始化");
-    }
-
-    return oldContextToken;
+  } catch (error) {
+    console.log(
+      "refreshUserTokens 拉取失败，沿用已存 token:",
+      getErrorMessage(error),
+    );
   }
+
+  await writeRuntimeState({
+    users,
+    getUpdatesBuf: newGetUpdatesBuf,
+    updatedAt: new Date().toISOString(),
+  });
 }
 
 export async function sendMessage(
@@ -261,9 +246,26 @@ export async function sendMessage(
   return result;
 }
 
-export async function sendToWechat(text: string, contextToken: string) {
-  const toUserId = requireEnv("TO_USER_ID");
-  return sendMessage(toUserId, contextToken, text);
+/**
+ * 给所有已绑定（曾给机器人发过消息）的用户发同一条消息，每人用各自最新的 context_token。
+ * 某个用户 token 失效只记日志，不影响其他人。返回实际成功发送的人数。
+ */
+export async function sendToAllUsers(text: string): Promise<number> {
+  const state = await readRuntimeState();
+  const users = state.users ?? {};
+  let sent = 0;
+
+  for (const [userId, sess] of Object.entries(users)) {
+    if (!sess.contextToken) continue;
+    try {
+      await sendMessage(userId, sess.contextToken, text);
+      sent++;
+    } catch (error) {
+      console.error(`发送给 ${userId} 失败:`, getErrorMessage(error));
+    }
+  }
+
+  return sent;
 }
 
 function extractText(msg: ILinkMessage): string | null {
@@ -281,7 +283,7 @@ export async function checkAndReply(): Promise<void> {
   const getUpdatesBuf = state.getUpdatesBuf || "";
 
   let newGetUpdatesBuf = getUpdatesBuf;
-  let latestContextToken = state.contextToken;
+  const users = { ...(state.users ?? {}) };
 
   let resp: ILinkGetUpdatesResponse;
   try {
@@ -314,6 +316,14 @@ export async function checkAndReply(): Promise<void> {
     const text = extractText(msg);
     if (!text) continue;
 
+    // 顺手把该用户的最新 context_token / 最后发言时间存进 users 表。
+    const prev = users[msg.from_user_id] ?? {};
+    users[msg.from_user_id] = {
+      contextToken: msg.context_token,
+      lastUserMessageAt: new Date(msg.create_time_ms ?? Date.now()).toISOString(),
+      lastExpiryReminderAt: prev.lastExpiryReminderAt,
+    };
+
     try {
       const reply = await answerForMessage(text, list);
       await sendMessage(msg.from_user_id, msg.context_token, reply);
@@ -321,15 +331,11 @@ export async function checkAndReply(): Promise<void> {
     } catch (error) {
       console.error("回复失败:", getErrorMessage(error));
     }
-
-    latestContextToken = msg.context_token;
   }
 
   await writeRuntimeState({
-    contextToken: latestContextToken,
+    users,
     getUpdatesBuf: newGetUpdatesBuf,
-    lastUserMessageAt: state.lastUserMessageAt,
-    lastExpiryReminderAt: state.lastExpiryReminderAt,
     updatedAt: new Date().toISOString(),
   });
 
@@ -350,16 +356,13 @@ function expiryRemindThresholdMs(): number {
  */
 export async function checkExpiry(): Promise<void> {
   const token = requireEnv("ILINK_TOKEN");
-  const toUserId = requireEnv("TO_USER_ID");
   const state = await readRuntimeState();
 
   const getUpdatesBuf = state.getUpdatesBuf || "";
   let newGetUpdatesBuf = getUpdatesBuf;
-  let latestContextToken = state.contextToken;
-  let lastUserMessageAt = state.lastUserMessageAt;
-  let lastExpiryReminderAt = state.lastExpiryReminderAt;
+  const users = { ...(state.users ?? {}) };
 
-  // 1) 拉最新消息：若用户刚发过消息，就刷新 token 并重置计时。
+  // 1) 拉最新消息：任何用户刚发过消息，就刷新其 token 并重置计时。
   try {
     const resp = (await fetch(`${BASE}/ilink/bot/getupdates`, {
       method: "POST",
@@ -373,61 +376,59 @@ export async function checkExpiry(): Promise<void> {
 
     if (resp.get_updates_buf) newGetUpdatesBuf = resp.get_updates_buf;
 
-    let newestMessageTime: number | null = null;
     for (const msg of resp.msgs ?? []) {
-      if (msg.message_type !== 1) continue;
-      if (!msg.context_token) continue;
-      if (msg.from_user_id !== toUserId) continue;
-
-      const t = msg.create_time_ms ?? Date.now();
-      if (newestMessageTime === null || t > newestMessageTime) {
-        newestMessageTime = t;
-      }
-      latestContextToken = msg.context_token;
-    }
-
-    if (newestMessageTime !== null) {
-      lastUserMessageAt = new Date(newestMessageTime).toISOString();
+      if (msg.message_type !== 1 || !msg.context_token) continue;
+      const prev = users[msg.from_user_id] ?? {};
+      users[msg.from_user_id] = {
+        contextToken: msg.context_token,
+        lastUserMessageAt: new Date(
+          msg.create_time_ms ?? Date.now(),
+        ).toISOString(),
+        lastExpiryReminderAt: prev.lastExpiryReminderAt,
+      };
     }
   } catch (error) {
     console.log("checkExpiry 拉取消息失败，本轮跳过:", getErrorMessage(error));
     return;
   }
 
-  // 2) 判断是否需要提醒（距离上次发言超过阈值，且本轮尚未提醒过）。
-  const ageMs = lastUserMessageAt
-    ? Date.now() - Date.parse(lastUserMessageAt)
-    : null;
-  const alreadyReminded =
-    lastExpiryReminderAt && lastUserMessageAt
-      ? Date.parse(lastExpiryReminderAt) >= Date.parse(lastUserMessageAt)
-      : false;
+  // 2) 按用户判断是否要发「续命」提醒（超过阈值且本轮尚未提醒过）。
+  const threshold = expiryRemindThresholdMs();
+  for (const [userId, sess] of Object.entries(users)) {
+    const ageMs = sess.lastUserMessageAt
+      ? Date.now() - Date.parse(sess.lastUserMessageAt)
+      : null;
+    const alreadyReminded =
+      sess.lastExpiryReminderAt && sess.lastUserMessageAt
+        ? Date.parse(sess.lastExpiryReminderAt) >=
+          Date.parse(sess.lastUserMessageAt)
+        : false;
 
-  if (
-    ageMs !== null &&
-    ageMs >= expiryRemindThresholdMs() &&
-    !alreadyReminded &&
-    latestContextToken
-  ) {
-    try {
-      await sendMessage(toUserId, latestContextToken, EXPIRY_REMINDER_TEXT);
-      lastExpiryReminderAt = new Date().toISOString();
-      console.log("已发送过期提醒");
-    } catch (error) {
-      console.error("发送过期提醒失败:", getErrorMessage(error));
+    if (
+      ageMs !== null &&
+      ageMs >= threshold &&
+      !alreadyReminded &&
+      sess.contextToken
+    ) {
+      try {
+        await sendMessage(userId, sess.contextToken, EXPIRY_REMINDER_TEXT);
+        users[userId] = {
+          ...sess,
+          lastExpiryReminderAt: new Date().toISOString(),
+        };
+        console.log(`已发送过期提醒给 ${userId}`);
+      } catch (error) {
+        console.error(`发送过期提醒给 ${userId} 失败:`, getErrorMessage(error));
+      }
     }
   }
 
   // 3) 写回状态。
   await writeRuntimeState({
-    contextToken: latestContextToken,
+    users,
     getUpdatesBuf: newGetUpdatesBuf,
-    lastUserMessageAt,
-    lastExpiryReminderAt,
     updatedAt: new Date().toISOString(),
   });
 
-  console.log(
-    `过期检查完成：最后发言 ${lastUserMessageAt ?? "未知"}，上次提醒 ${lastExpiryReminderAt ?? "无"}`,
-  );
+  console.log(`过期检查完成：共 ${Object.keys(users).length} 个用户`);
 }

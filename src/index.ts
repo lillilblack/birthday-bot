@@ -3,7 +3,7 @@ import {
   getTomorrowBirthdayPeople,
   loadBirthdays,
 } from "./birthday";
-import { fetchLatestContextToken, sendToWechat } from "./ilink";
+import { refreshUserTokens, sendToAllUsers } from "./ilink";
 import type { FamilyMember } from "./types";
 
 /**
@@ -37,10 +37,10 @@ async function main() {
   const message = lines.join("\n");
   console.log(message);
 
-  const contextToken = await fetchLatestContextToken();
-  await sendToWechat(message, contextToken);
+  await refreshUserTokens();
+  const sent = await sendToAllUsers(message);
 
-  console.log("生日提醒发送成功");
+  console.log(`生日提醒已发送给 ${sent} 人`);
 }
 
 main().catch((err) => {
