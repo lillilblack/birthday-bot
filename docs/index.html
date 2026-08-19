@@ -3,14 +3,578 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Birthday Bot Setup</title>
-    <meta http-equiv="refresh" content="0; url=./setup.html" />
-    <script>
-      window.location.replace("./setup.html");
-    </script>
+    <meta name="description" content="辩论队生日名单 —— 谁今天生日、谁快生日、搜名字都能看。" />
+    <title>🎂 辩论队生日名单</title>
+    <style>
+      :root {
+        --bg: #fff6f0;
+        --card: #ffffff;
+        --text: #20161a;
+        --muted: #8a7a80;
+        --line: #f0e2db;
+        --rose: #e85d75;
+        --rose-2: #f59e0b;
+        --lunar: #7c6bb0;
+        --today: #e85d75;
+        --tomorrow: #f59e0b;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+        background:
+          radial-gradient(circle at 12% -10%, #ffe3ec, transparent 42%),
+          radial-gradient(circle at 100% 0%, #fff0d8, transparent 40%),
+          var(--bg);
+        color: var(--text);
+        line-height: 1.5;
+      }
+
+      .wrap {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 20px 16px 40px;
+      }
+
+      .hero {
+        text-align: center;
+        padding: 20px 4px 6px;
+      }
+      .hero h1 {
+        margin: 0 0 6px;
+        font-size: 26px;
+        letter-spacing: 1px;
+      }
+      .hero .sub {
+        color: var(--muted);
+        font-size: 14px;
+      }
+      .hero .pills {
+        margin-top: 12px;
+        display: flex;
+        gap: 8px;
+        justify-content: center;
+        flex-wrap: wrap;
+      }
+      .pill {
+        display: inline-block;
+        padding: 4px 12px;
+        border-radius: 999px;
+        background: var(--card);
+        border: 1px solid var(--line);
+        font-size: 13px;
+        color: var(--muted);
+      }
+      .pill b {
+        color: var(--rose);
+        font-weight: 700;
+      }
+
+      .card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        padding: 16px;
+        margin-top: 14px;
+        box-shadow: 0 8px 24px rgba(32, 22, 26, 0.05);
+      }
+
+      .section-title {
+        margin: 0 0 12px;
+        font-size: 15px;
+        font-weight: 700;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .section-title .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: linear-gradient(135deg, var(--rose), var(--rose-2));
+        display: inline-block;
+      }
+
+      /* 今天 / 明天 */
+      .today-row {
+        display: flex;
+        gap: 12px;
+      }
+      .today-box {
+        flex: 1;
+        border-radius: 14px;
+        padding: 14px;
+        border: 1px solid var(--line);
+        background: #fffbf9;
+      }
+      .today-box .label {
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 1px;
+      }
+      .today-box.today .label {
+        color: var(--today);
+      }
+      .today-box.tomorrow .label {
+        color: var(--tomorrow);
+      }
+      .today-box .date {
+        font-size: 13px;
+        color: var(--muted);
+        margin: 2px 0 8px;
+      }
+      .today-box .names {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .name-chip {
+        padding: 5px 12px;
+        border-radius: 999px;
+        font-weight: 600;
+        font-size: 14px;
+        background: #fff;
+        border: 1px solid var(--line);
+      }
+      .today-box.today .name-chip {
+        background: #ffeef1;
+        border-color: #ffd4dc;
+        color: #c23b55;
+      }
+      .today-box.tomorrow .name-chip {
+        background: #fff4e0;
+        border-color: #ffe1ae;
+        color: #a96a00;
+      }
+      .empty-note {
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      /* 即将到来 */
+      .upcoming-item {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 2px;
+        border-bottom: 1px dashed var(--line);
+      }
+      .upcoming-item:last-child {
+        border-bottom: 0;
+      }
+      .upcoming-item .when {
+        flex: 0 0 56px;
+        font-size: 12px;
+        font-weight: 700;
+        color: var(--rose);
+      }
+      .upcoming-item .who {
+        flex: 1;
+        font-weight: 600;
+        font-size: 15px;
+      }
+      .upcoming-item .who .lunar-tag {
+        font-weight: 400;
+        font-size: 12px;
+        color: var(--lunar);
+        margin-left: 6px;
+      }
+      .upcoming-item .solar-date {
+        font-size: 13px;
+        color: var(--muted);
+      }
+
+      /* 搜索 */
+      .search-box input {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 12px 14px;
+        font-size: 15px;
+        outline: none;
+        background: #fffbf9;
+        color: var(--text);
+      }
+      .search-box input:focus {
+        border-color: var(--rose);
+        box-shadow: 0 0 0 3px rgba(232, 93, 117, 0.12);
+      }
+      .search-hint {
+        margin-top: 8px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      /* 名单 */
+      .month-group {
+        margin-top: 18px;
+      }
+      .month-group .month-head {
+        font-size: 13px;
+        font-weight: 700;
+        color: var(--muted);
+        letter-spacing: 1px;
+        margin: 0 0 8px;
+      }
+      .member-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 2px;
+        border-bottom: 1px solid #f6ece8;
+      }
+      .member-row:last-child {
+        border-bottom: 0;
+      }
+      .member-row .m-name {
+        font-weight: 600;
+        font-size: 15px;
+      }
+      .member-row .m-bday {
+        margin-left: auto;
+        font-size: 13px;
+        color: var(--muted);
+      }
+      .member-row .m-bday.lunar {
+        color: var(--lunar);
+      }
+      .badge {
+        font-size: 11px;
+        font-weight: 700;
+        padding: 2px 8px;
+        border-radius: 999px;
+      }
+      .badge.today {
+        background: #ffeef1;
+        color: #c23b55;
+      }
+      .badge.tomorrow {
+        background: #fff4e0;
+        color: #a96a00;
+      }
+      .hidden {
+        display: none !important;
+      }
+
+      /* 错误 / 加载 */
+      .error-box {
+        text-align: center;
+        padding: 24px;
+        color: var(--muted);
+      }
+      .error-box button {
+        margin-top: 12px;
+        border: 0;
+        border-radius: 10px;
+        padding: 10px 18px;
+        font-weight: 600;
+        color: #fff;
+        background: linear-gradient(135deg, var(--rose), var(--rose-2));
+        cursor: pointer;
+      }
+
+      .footer {
+        text-align: center;
+        margin-top: 24px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .footer a {
+        color: var(--rose);
+        text-decoration: none;
+      }
+
+      @media (max-width: 480px) {
+        .today-row {
+          flex-direction: column;
+        }
+        .hero h1 {
+          font-size: 22px;
+        }
+      }
+    </style>
   </head>
   <body>
-    <p>正在跳转到初始化页面...</p>
-    <p><a href="./setup.html">如果没有自动跳转，请点击这里</a></p>
+    <div class="wrap">
+      <header class="hero">
+        <h1>🎂 辩论队生日名单</h1>
+        <p class="sub">谁今天生日、谁快生日，一眼就能看 · 纯静态网页，全队共享</p>
+        <div class="pills" id="statPills"></div>
+      </header>
+
+      <div class="card">
+        <div class="section-title"><span class="dot"></span>今天 / 明天</div>
+        <div class="today-row" id="todayRow"></div>
+      </div>
+
+      <div class="card">
+        <div class="section-title"><span class="dot"></span>接下来要过的生日</div>
+        <div id="upcomingList"></div>
+      </div>
+
+      <div class="card">
+        <div class="section-title"><span class="dot"></span>找队员</div>
+        <div class="search-box">
+          <input id="searchInput" type="text" placeholder="输入姓名或姓氏搜索，例如：陈 / 叶学斌" />
+        </div>
+        <div class="search-hint" id="searchHint"></div>
+      </div>
+
+      <div class="card" id="rosterCard">
+        <div class="section-title"><span class="dot"></span>完整名单</div>
+        <div id="roster"></div>
+      </div>
+
+      <div class="footer">
+        名单数据来自仓库 <code>roster.json</code>，由队长维护 · 微信里也能查（给机器人发「帮助」）<br />
+        <a href="https://github.com/lillilblack/birthday-bot" target="_blank" rel="noopener">在 GitHub 查看仓库 →</a>
+      </div>
+    </div>
+
+    <script type="module">
+      import { Solar, Lunar } from "./lunar.mjs";
+
+      const $ = (id) => document.getElementById(id);
+
+      // 农历数字 → 中文（用于展示「农历 二月廿八」）
+      const LUNAR_MONTHS = ["正", "二", "三", "四", "五", "六", "七", "八", "九", "十", "冬", "腊"];
+      const CN = ["一", "二", "三", "四", "五", "六", "七", "八", "九", "十"];
+      function lunarMonthName(m) {
+        return LUNAR_MONTHS[m - 1] + "月";
+      }
+      function lunarDayName(d) {
+        if (d <= 10) return "初" + CN[d - 1];
+        if (d < 20) return "十" + CN[d - 11];
+        if (d === 20) return "二十";
+        if (d < 30) return "廿" + CN[d - 21];
+        return "三十";
+      }
+
+      // 统一按东八区（北京时间）取「今天」，避免访客时区不同导致日期偏移
+      function shanghaiDate(offsetDays = 0) {
+        const parts = new Intl.DateTimeFormat("en-CA", {
+          timeZone: "Asia/Shanghai",
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+        }).formatToParts(new Date());
+        const get = (t) => +parts.find((p) => p.type === t).value;
+        const y = get("year");
+        const m = get("month");
+        const d = get("day");
+        if (!offsetDays) return { y, m, d };
+        const dt = new Date(Date.UTC(y, m - 1, d + offsetDays));
+        return { y: dt.getUTCFullYear(), m: dt.getUTCMonth() + 1, d: dt.getUTCDate() };
+      }
+
+      function isBirthdayOn(p, y, m, d) {
+        const solar = Solar.fromYmd(y, m, d);
+        if (p.birthdayType === "solar") {
+          return p.birthMonth === solar.getMonth() && p.birthDay === solar.getDay();
+        }
+        const lunar = solar.getLunar();
+        return p.birthMonth === lunar.getMonth() && p.birthDay === lunar.getDay();
+      }
+
+      function compareSolar(a, b) {
+        if (a.getYear() !== b.getYear()) return a.getYear() - b.getYear();
+        if (a.getMonth() !== b.getMonth()) return a.getMonth() - b.getMonth();
+        return a.getDay() - b.getDay();
+      }
+
+      // 下一个生日对应的公历日期（今天已过则顺延到下一年；某年无该农历日则换一年）
+      function nextBirthdaySolar(p, todaySolar) {
+        if (p.birthdayType === "solar") {
+          let c = Solar.fromYmd(todaySolar.getYear(), p.birthMonth, p.birthDay);
+          if (compareSolar(c, todaySolar) < 0) {
+            c = Solar.fromYmd(todaySolar.getYear() + 1, p.birthMonth, p.birthDay);
+          }
+          return c;
+        }
+        for (let year = todaySolar.getYear(); year <= todaySolar.getYear() + 1; year++) {
+          try {
+            const c = Lunar.fromYmd(year, p.birthMonth, p.birthDay).getSolar();
+            if (compareSolar(c, todaySolar) >= 0) return c;
+          } catch {
+            // 该年无此农历日期，试下一年
+          }
+        }
+        return null;
+      }
+
+      function daysBetween(fromSolar, toSolar) {
+        const a = Date.UTC(fromSolar.getYear(), fromSolar.getMonth() - 1, fromSolar.getDay());
+        const b = Date.UTC(toSolar.getYear(), toSolar.getMonth() - 1, toSolar.getDay());
+        return Math.round((b - a) / 86400000);
+      }
+
+      function memberLabel(p) {
+        return p.birthdayType === "solar"
+          ? `${p.birthMonth}月${p.birthDay}日`
+          : `农历 ${lunarMonthName(p.birthMonth)}${lunarDayName(p.birthDay)}`;
+      }
+
+      function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, (c) => ({
+          "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+        }[c]));
+      }
+
+      // ---------- 渲染 ----------
+      function renderStatPills(list) {
+        const solar = list.filter((p) => p.birthdayType === "solar").length;
+        const lunar = list.length - solar;
+        $("statPills").innerHTML =
+          `<span class="pill">共 <b>${list.length}</b> 名队员</span>` +
+          `<span class="pill">阳历 <b>${solar}</b></span>` +
+          `<span class="pill">农历 <b>${lunar}</b></span>`;
+      }
+
+      function renderTodayTomorrow(list, today, tomorrow) {
+        const todayPeople = list.filter((p) => isBirthdayOn(p, today.y, today.m, today.d));
+        const tomorrowPeople = list.filter((p) => isBirthdayOn(p, tomorrow.y, tomorrow.m, tomorrow.d));
+
+        const chip = (p) => `<span class="name-chip">${escapeHtml(p.name)}</span>`;
+        const box = (cls, title, date, people, emptyText) => {
+          const names = people.length
+            ? people.map(chip).join("")
+            : `<span class="empty-note">${emptyText}</span>`;
+          return (
+            `<div class="today-box ${cls}">` +
+            `<div class="label">${title}</div>` +
+            `<div class="date">${date}</div>` +
+            `<div class="names">${names}</div>` +
+            `</div>`
+          );
+        };
+
+        $("todayRow").innerHTML =
+          box("today", "🎂 今天", `${today.m}月${today.d}日`, todayPeople, "今天没有队友生日 🎈") +
+          box("tomorrow", "⏰ 明天", `${tomorrow.m}月${tomorrow.d}日`, tomorrowPeople, "明天没有队友生日 🎈");
+      }
+
+      function renderUpcoming(list, today) {
+        const todaySolar = Solar.fromYmd(today.y, today.m, today.d);
+
+        const items = list
+          .map((p) => {
+            const next = nextBirthdaySolar(p, todaySolar);
+            if (!next) return null;
+            return { p, days: daysBetween(todaySolar, next), next };
+          })
+          .filter(Boolean)
+          .sort((a, b) => a.days - b.days)
+          .slice(0, 12);
+
+        const whenText = (days) =>
+          days === 0 ? "今天" : days === 1 ? "明天" : `${days}天后`;
+
+        $("upcomingList").innerHTML = items
+          .map(({ p, days, next }) => {
+            const lunarTag = p.birthdayType === "lunar" ? `<span class="lunar-tag">农历 ${lunarMonthName(p.birthMonth)}${lunarDayName(p.birthDay)}</span>` : "";
+            const solarDate = `${next.getMonth()}月${next.getDay()}日` + (next.getYear() !== today.y ? "（明年）" : "");
+            return (
+              `<div class="upcoming-item">` +
+              `<div class="when">${whenText(days)}</div>` +
+              `<div class="who">${escapeHtml(p.name)}${lunarTag}</div>` +
+              `<div class="solar-date">${solarDate}</div>` +
+              `</div>`
+            );
+          })
+          .join("");
+      }
+
+      function renderRoster(list, todayIds, tomorrowIds) {
+        const solar = list.filter((p) => p.birthdayType === "solar");
+        const lunar = list.filter((p) => p.birthdayType === "lunar");
+
+        const byMonth = {};
+        for (let m = 1; m <= 12; m++) byMonth[m] = [];
+        solar.forEach((p) => byMonth[p.birthMonth].push(p));
+        Object.values(byMonth).forEach((arr) => arr.sort((a, b) => a.birthDay - b.birthDay));
+        lunar.sort((a, b) => a.birthMonth - b.birthMonth || a.birthDay - b.birthDay);
+
+        const row = (p) => {
+          const badge = todayIds.has(p.id)
+            ? `<span class="badge today">今天</span>`
+            : tomorrowIds.has(p.id)
+            ? `<span class="badge tomorrow">明天</span>`
+            : "";
+          const cls = p.birthdayType === "lunar" ? "m-bday lunar" : "m-bday";
+          return (
+            `<div class="member-row" data-search="${escapeHtml(p.name)} ${escapeHtml(p.familyName || "")}">` +
+            `<span class="m-name">${escapeHtml(p.name)}</span>${badge}` +
+            `<span class="${cls}">${memberLabel(p)}</span>` +
+            `</div>`
+          );
+        };
+
+        let html = "";
+        for (let m = 1; m <= 12; m++) {
+          const arr = byMonth[m];
+          if (!arr.length) continue;
+          html += `<div class="month-group"><div class="month-head">${m}月</div>${arr.map(row).join("")}</div>`;
+        }
+        if (lunar.length) {
+          html += `<div class="month-group"><div class="month-head">农历生日</div>${lunar.map(row).join("")}</div>`;
+        }
+        $("roster").innerHTML = html;
+      }
+
+      async function main() {
+        let list;
+        try {
+          const resp = await fetch("./roster.json", { cache: "no-store" });
+          if (!resp.ok) throw new Error("HTTP " + resp.status);
+          list = await resp.json();
+        } catch (err) {
+          $("rosterCard").innerHTML =
+            `<div class="error-box">名单加载失败：${escapeHtml(err.message)}<br /><button onclick="location.reload()">重试</button></div>`;
+          return;
+        }
+
+        const today = shanghaiDate(0);
+        const tomorrow = shanghaiDate(1);
+        const todayIds = new Set(
+          list.filter((p) => isBirthdayOn(p, today.y, today.m, today.d)).map((p) => p.id)
+        );
+        const tomorrowIds = new Set(
+          list.filter((p) => isBirthdayOn(p, tomorrow.y, tomorrow.m, tomorrow.d)).map((p) => p.id)
+        );
+
+        renderStatPills(list);
+        renderTodayTomorrow(list, today, tomorrow);
+        renderUpcoming(list, today);
+        renderRoster(list, todayIds, tomorrowIds);
+
+        // 搜索
+        const input = $("searchInput");
+        const hint = $("searchHint");
+        input.addEventListener("input", () => {
+          const q = input.value.trim().toLowerCase();
+          let shown = 0;
+          document.querySelectorAll(".month-group").forEach((g) => {
+            let groupShown = 0;
+            g.querySelectorAll(".member-row").forEach((r) => {
+              const match = !q || (r.dataset.search || "").toLowerCase().includes(q);
+              r.classList.toggle("hidden", !match);
+              if (match) groupShown++;
+            });
+            g.classList.toggle("hidden", groupShown === 0);
+            shown += groupShown;
+          });
+          hint.textContent = q
+            ? `匹配到 ${shown} 名队员`
+            : `共 ${list.length} 名队员，可按姓名或姓氏搜索`;
+        });
+        hint.textContent = `共 ${list.length} 名队员，可按姓名或姓氏搜索`;
+      }
+
+      main();
+    </script>
   </body>
 </html>
