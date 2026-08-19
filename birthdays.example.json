@@ -9,7 +9,6 @@
     "nickName": "小张",
     "relation": "我自己",
     "birthYear": 1995,
-    "gender": "male",
     "birthdayType": "solar",
     "birthMonth": 8,
     "birthDay": 30
@@ -23,7 +22,6 @@
     "name": "李四",
     "relation": "老婆",
     "birthYear": 1996,
-    "gender": "female",
     "birthdayType": "lunar",
     "birthMonth": 5,
     "birthDay": 12

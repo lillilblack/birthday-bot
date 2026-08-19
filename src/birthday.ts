@@ -2,7 +2,7 @@ import dayjs from "dayjs";
 import timezone from "dayjs/plugin/timezone";
 import utc from "dayjs/plugin/utc";
 import { Lunar, Solar } from "lunar-typescript";
-import { getGreeting } from "./greetings";
+import { loadOverlay } from "./store";
 import type { FamilyMember } from "./types";
 
 const APP_TIMEZONE = "Asia/Shanghai";
@@ -15,42 +15,31 @@ function nowInAppTimezone() {
   return dayjs().tz(APP_TIMEZONE);
 }
 
+// 判断某个成员在指定「东八区日期」是否生日：
+// 阳历直接比月日；农历先把当天公历换算成农历，再比月日。
+function isBirthdayOn(person: FamilyMember, date: dayjs.Dayjs): boolean {
+  const solar = Solar.fromYmd(date.year(), date.month() + 1, date.date());
+  if (person.birthdayType === "solar") {
+    return (
+      person.birthMonth === solar.getMonth() && person.birthDay === solar.getDay()
+    );
+  }
+  const lunar = solar.getLunar();
+  return (
+    person.birthMonth === lunar.getMonth() && person.birthDay === lunar.getDay()
+  );
+}
+
 export function getTodayBirthdayPeople(list: FamilyMember[]) {
-  // 统一按东八区计算“今天”，避免运行环境时区差异造成日期偏差。
-  const today = nowInAppTimezone();
-
-  const solarMonth = today.month() + 1;
-  const solarDay = today.date();
-
-  const lunar = Solar.fromYmd(today.year(), solarMonth, solarDay).getLunar();
-  const lunarMonth = lunar.getMonth();
-  const lunarDay = lunar.getDay();
-
-  return list.filter((person) => {
-    if (person.birthdayType === "solar") {
-      return person.birthMonth === solarMonth && person.birthDay === solarDay;
-    }
-
-    return person.birthMonth === lunarMonth && person.birthDay === lunarDay;
-  });
+  return list.filter((p) => isBirthdayOn(p, nowInAppTimezone()));
 }
 
-export function buildBirthdayGreetingMessage(todayPeople: FamilyMember[]) {
-  // 使用队长提供的固定祝福文案；多人同一天生日时分别标注姓名。
-  const names = todayPeople.map((p) => p.name).join("、");
-  const blocks = todayPeople.map((person) => {
-    const greeting = getGreeting(person.name);
-    return todayPeople.length > 1 ? `【${person.name}】\n${greeting}` : greeting;
-  });
-
-  return ["🎂 今天生日：" + names, "", blocks.join("\n\n")].join("\n");
+export function getTomorrowBirthdayPeople(list: FamilyMember[]) {
+  return list.filter((p) => isBirthdayOn(p, nowInAppTimezone().add(1, "day")));
 }
 
-/**
- * 读取生日名单：优先环境变量 BIRTHDAYS_JSON，否则读根目录 birthdays.json。
- * 从 index.ts 移到这里，供「每日推送」与「指令回复」两个入口复用。
- */
-export async function loadBirthdays(): Promise<FamilyMember[]> {
+// 主名单：优先 BIRTHDAYS_JSON（云端 Secret），否则读 birthdays.json（本地）。
+async function loadBase(): Promise<FamilyMember[]> {
   const fromEnv = process.env.BIRTHDAYS_JSON;
   if (fromEnv) {
     try {
@@ -80,6 +69,24 @@ export async function loadBirthdays(): Promise<FamilyMember[]> {
   );
 }
 
+/**
+ * 读取有效生日名单：主名单 + 微信自助新增/修改的 overlay 合并。
+ * overlay 里同 id 的成员覆盖主名单，overlay 独有的追加在末尾。
+ */
+export async function loadBirthdays(): Promise<FamilyMember[]> {
+  const base = await loadBase();
+  const overlay = await loadOverlay();
+  if (overlay.length === 0) return base;
+
+  const overlayById = new Map(overlay.map((m) => [m.id, m]));
+  const merged = base.map((m) => overlayById.get(m.id) ?? m);
+  const baseIds = new Set(base.map((m) => m.id));
+  for (const m of overlay) {
+    if (!baseIds.has(m.id)) merged.push(m);
+  }
+  return merged;
+}
+
 export interface UpcomingBirthday {
   member: FamilyMember;
   days: number;
@@ -93,6 +100,55 @@ function compareSolar(a: Solar, b: Solar): number {
   if (a.getYear() !== b.getYear()) return a.getYear() - b.getYear();
   if (a.getMonth() !== b.getMonth()) return a.getMonth() - b.getMonth();
   return a.getDay() - b.getDay();
+}
+
+// 计算某个成员下一个生日对应的公历日期（今天已过则顺延到下一年）。
+// 农历生日会换算成对应年份的公历日期；某年无该农历日期（如三十）时换下一年。
+function nextBirthdaySolar(member: FamilyMember, todaySolar: Solar): Solar | null {
+  if (member.birthdayType === "solar") {
+    let candidate = Solar.fromYmd(
+      todaySolar.getYear(),
+      member.birthMonth,
+      member.birthDay,
+    );
+    if (compareSolar(candidate, todaySolar) < 0) {
+      candidate = Solar.fromYmd(
+        todaySolar.getYear() + 1,
+        member.birthMonth,
+        member.birthDay,
+      );
+    }
+    return candidate;
+  }
+
+  for (let year = todaySolar.getYear(); year <= todaySolar.getYear() + 1; year++) {
+    try {
+      const candidate = Lunar.fromYmd(
+        year,
+        member.birthMonth,
+        member.birthDay,
+      ).getSolar();
+      if (compareSolar(candidate, todaySolar) >= 0) {
+        return candidate;
+      }
+    } catch {
+      // 该年无此农历日期，跳到下一年
+    }
+  }
+  return null;
+}
+
+// 返回某个成员距离下一个生日还有几天（0 表示今天）；无法计算时为 null。
+export function getDaysUntilBirthday(member: FamilyMember): number | null {
+  const today = nowInAppTimezone();
+  const todaySolar = Solar.fromYmd(today.year(), today.month() + 1, today.date());
+  const next = nextBirthdaySolar(member, todaySolar);
+  if (!next) return null;
+
+  const candidateStr = toDateString(next.getYear(), next.getMonth(), next.getDay());
+  return dayjs
+    .tz(candidateStr, APP_TIMEZONE)
+    .diff(today.startOf("day"), "day");
 }
 
 /**
@@ -109,32 +165,7 @@ export function getUpcomingBirthdays(
   const results: UpcomingBirthday[] = [];
 
   for (const member of list) {
-    let next: Solar | null = null;
-
-    if (member.birthdayType === "solar") {
-      let candidate = Solar.fromYmd(today.year(), member.birthMonth, member.birthDay);
-      if (compareSolar(candidate, todaySolar) < 0) {
-        candidate = Solar.fromYmd(today.year() + 1, member.birthMonth, member.birthDay);
-      }
-      next = candidate;
-    } else {
-      for (let year = today.year(); year <= today.year() + 1; year++) {
-        try {
-          const candidate = Lunar.fromYmd(
-            year,
-            member.birthMonth,
-            member.birthDay,
-          ).getSolar();
-          if (compareSolar(candidate, todaySolar) >= 0) {
-            next = candidate;
-            break;
-          }
-        } catch {
-          // 该年无此农历日期，跳到下一年
-        }
-      }
-    }
-
+    const next = nextBirthdaySolar(member, todaySolar);
     if (!next) continue;
 
     const candidateStr = toDateString(next.getYear(), next.getMonth(), next.getDay());

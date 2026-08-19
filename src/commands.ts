@@ -1,4 +1,14 @@
-import { getTodayBirthdayPeople, getUpcomingBirthdays } from "./birthday";
+import {
+  getDaysUntilBirthday,
+  getTodayBirthdayPeople,
+  getUpcomingBirthdays,
+} from "./birthday";
+import {
+  handleAdd,
+  handleModify,
+  isAddIntent,
+  isModifyIntent,
+} from "./member-commands";
 import type { FamilyMember } from "./types";
 
 const TYPE_LABEL: Record<FamilyMember["birthdayType"], string> = {
@@ -6,15 +16,25 @@ const TYPE_LABEL: Record<FamilyMember["birthdayType"], string> = {
   lunar: "农历",
 };
 
+// 未命中任何指令时的兜底回复。
+const FALLBACK_TEXT = "🤖 我是生日助手，能提醒、查询和管理生日。回复「帮助」查看能问什么。";
+
 function helpText(): string {
   return [
-    "🤖 生日提醒机器人",
+    "🤖 生日提醒助手",
     "",
-    "你可以发这些指令给我：",
-    "- 还有几天有生日 / 最近谁生日",
+    "生日查询：",
     "- 今天谁生日",
-    "- 生日列表 / 所有生日",
-    "- 帮助",
+    "- 还有几天有生日 / 最近谁生日",
+    "- XX 的生日（如：王嘉仪的生日）",
+    "- 生日列表",
+    "",
+    "自助管理：",
+    "- 添加生日 王小明 阳历 3 月 15 日",
+    "- 添加生日 王小明 农历 二月十五 队友",
+    "- 修改生日 王小明 农历 二月初五",
+    "",
+    "回复「帮助」可再次查看本说明",
   ].join("\n");
 }
 
@@ -73,23 +93,72 @@ function answerList(list: FamilyMember[]): string {
   return ["🎂 生日列表：", ...lines].join("\n");
 }
 
+// 消息里出现队员名字时精确命中本人。
+function findMentionedMembers(text: string, list: FamilyMember[]): FamilyMember[] {
+  return list.filter((m) => text.includes(m.name));
+}
+
+function answerPersonBirthday(person: FamilyMember): string {
+  const typeLabel = TYPE_LABEL[person.birthdayType];
+  const days = getDaysUntilBirthday(person);
+  const dayText =
+    days === null ? "" : days === 0 ? "（就是今天🎉）" : `（还有 ${days} 天）`;
+  return `🎂 ${person.name} 的生日：${typeLabel}${person.birthMonth}月${person.birthDay}日${dayText}`;
+}
+
+// —— 意图判断：只有「明确生日相关」的短语才走本地精确逻辑，
+//    避免「今天天气怎么样」这类普通问题被误判成生日查询。——
+
+function isTodayIntent(t: string) {
+  return /(今天|今日)/.test(t) && /(生日|寿星)/.test(t);
+}
+
+function isUpcomingIntent(t: string) {
+  return (
+    /(最近|还有几天|几天|下一个|下次|接下来|即将)/.test(t) &&
+    /(生日|寿星|谁)/.test(t)
+  );
+}
+
+function isListIntent(t: string) {
+  return /(列表|名单|所有|全部)/.test(t) && /(生日|寿星|队员)/.test(t);
+}
+
+function isHelpIntent(t: string) {
+  return /(帮助|怎么用|能干什么|有什么功能|指令)/i.test(t);
+}
+
+// 消息里同时出现队员名字 + 生日/日期类词 → 问某人生日。
+function personBirthdayMatch(
+  text: string,
+  list: FamilyMember[],
+): FamilyMember | null {
+  if (!/(生日|几号|哪天|什么时候|何时|寿星)/.test(text)) return null;
+  return findMentionedMembers(text, list)[0] ?? null;
+}
+
 /**
  * 根据用户发来的消息文本，返回要回复的内容。
+ * 命中生日指令走本地精确逻辑；否则返回简短兜底提示。
  */
-export function answerForMessage(text: string, list: FamilyMember[]): string {
+export async function answerForMessage(
+  text: string,
+  list: FamilyMember[],
+): Promise<string> {
   const t = text.trim();
 
-  if (/今天/.test(t)) {
-    return answerToday(list);
-  }
+  // 自助管理（新增/修改）优先于查询，避免「添加/修改生日 XX」被当成查生日。
+  if (isAddIntent(t)) return handleAdd(t);
+  if (isModifyIntent(t)) return handleModify(t);
 
-  if (/(还有几天|几天|最近|下一个|下次|接下来)/.test(t)) {
-    return answerUpcoming(list);
-  }
+  // 命中具体队员名字的指令优先走本地精确逻辑（查生日）。
+  const birthdayPerson = personBirthdayMatch(t, list);
+  if (birthdayPerson) return answerPersonBirthday(birthdayPerson);
 
-  if (/(列表|所有|全部|名单)/.test(t)) {
-    return answerList(list);
-  }
+  if (isTodayIntent(t)) return answerToday(list);
+  if (isUpcomingIntent(t)) return answerUpcoming(list);
+  if (isListIntent(t)) return answerList(list);
+  if (isHelpIntent(t)) return helpText();
 
-  return helpText();
+  return FALLBACK_TEXT;
 }

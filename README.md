@@ -1,293 +1,88 @@
-# Birthday Bot
+# Birthday Bot（辩论队生日提醒）
 
-一个用于家庭生日提醒的微信机器人项目。
+一个走微信的生日提醒机器人：每天 00:00 自动提醒「今天 / 明天谁生日」，也可以在微信里查某人的生日和整份名单。**纯提醒 + 查询，不含 AI。**
 
-![微信提醒效果预览](docs/images/wechat-preview.png)
+## 功能
 
-## Quick Start
+- 每天 00:00（北京时间）自动发一条提醒：
+  - 今天是 XX 生日 → 「🎂 今天是XX生日，记得祝生日快乐！」
+  - 明天是 XX 生日 → 「⏰ 明天是XX生日，记得提前准备祝福～」（即生日前一天提醒）
+  - 两者都没有 → 静默跳过，不打扰
+- 支持阳历 + 农历生日
+- 微信里发指令查询（需要机器人回复功能在运行）：
 
-1. Fork 本仓库
-2. 配置 GitHub Secrets：ILINK_TOKEN、TO_USER_ID、CONTEXT_TOKEN
-3. 可选配置 BIRTHDAYS_JSON
-4. 手动运行 Actions 测试
+| 你说 | 机器人回 |
+|---|---|
+| 今天谁生日 | 今天生日的人 |
+| 还有几天有生日 / 最近谁生日 | 最近 3 个生日 |
+| 王嘉仪的生日 | 只回她一个人的生日 + 还有几天 |
+| 生日列表 | 整份名单按月份分组 |
+| 添加生日 王小明 阳历 3 月 15 日 | 新增一名队员 |
+| 修改生日 王小明 农历 二月初五 | 改已有队员的生日 |
+| 帮助 | 指令说明 |
 
-默认采用开源友好的数据策略：
+## 运行方式
 
-- 仓库只提交示例数据（`birthdays.example.json`）
-- 真实数据不入库（`birthdays.json` 已被 `.gitignore` 忽略）
-- GitHub Actions 可通过 `BIRTHDAYS_JSON` Secret 注入真实数据
+两种，任选其一（也可同时）：
 
-同时提供两种 Bot 凭证初始化方式：
+1. **本地 Windows**：任务计划每天 00:00 跑 `bun run start` 发提醒；每 1~2 分钟跑 `bun run check` 回复查询。
+2. **云端 GitHub Actions**：见 [docs/云端部署教程.md](docs/云端部署教程.md)，关机也能跑。
 
-1. GitHub Pages 可视化配置页（实验功能，走 Cloudflare 中转代理）
-2. 本地 CLI 脚本（推荐，更安全）
+## 快速开始（本地）
 
-功能概览：
+```bash
+# 1. 装依赖（需要 Bun）
+bun install
 
-- 按北京时间计算今天是否有人生日（支持阳历和农历）
-- 有人生日时发送生日提醒文案
-- 没人生日时发送一条“机器人运行正常”的心跳消息
-- 每次发送前先调用 getupdates 尝试拿最新 context_token
-- 使用 Actions Cache 持久化 runtime state（context_token 与 get_updates_buf）
-- 可选：配置 AI Key 后自动生成祝福文案（支持 DeepSeek / 阿里通义兼容接口）
-- AI 调用基于 OpenAI SDK，通过 baseURL + model 适配不同厂商
+# 2. 配置 .env（ILINK_TOKEN / TO_USER_ID / CONTEXT_TOKEN）
+
+# 3. 准备名单
+cp birthdays.example.json birthdays.json   # 然后改成你自己的名单
+
+# 4. 手动发一次提醒
+bun run start
+```
+
+## 新增 / 修改成员
+
+三种方式：
+
+1. **微信自助**（推荐，不用碰代码）：直接在微信里给机器人发指令
+   - 添加：`添加生日 王小明 阳历 3 月 15 日`（阳历），`添加生日 李贝芊 农历 二月十五 队友`（农历，可带关系）
+   - 修改：`修改生日 王小明 农历 二月初五`
+   - 历法支持写「阳历/公历/solar」和「农历/阴历/lunar」；月日支持阿拉伯数字或中文数字（如「二月十五」）。
+
+2. **命令行新增**：
+
+   ```bash
+   bun run add-member "王嘉仪" solar 8 31        # 阳历 8 月 31 日
+   bun run add-member "李贝芊" lunar 2 28 队友    # 农历二月廿八
+   ```
+
+3. **直接编辑 `birthdays.json`**：按 `birthdays.example.json` 的格式加一条即可。
+
+微信自助新增/修改的成员会存到 `.runtime/birthdays-overlay.json`（与主名单自动合并），不覆盖 `birthdays.json`。云端部署时 `.runtime/` 随 GitHub Actions Cache 一起保存，微信新增也会被保留。
+
+新增后无需重启，下次提醒和查询会自动包含 TA。
+
+## 必要的环境变量 / Secrets
+
+- `ILINK_TOKEN`：iLink Bot Token
+- `TO_USER_ID`：要发送到的用户 ID
+- `CONTEXT_TOKEN`：会话 Token（首次需先给机器人发一条消息拿到）
+- `BIRTHDAYS_JSON`（云端用）：整个 `birthdays.json` 的内容
+
+## 重要：Context Token 有效期
+
+`CONTEXT_TOKEN` 约 24 小时过期，只有「你主动给机器人发消息」时才会刷新。所以每隔一两天给机器人随便发一句（比如「在吗」），否则它会断线收不到提醒。
 
 ## 项目结构
 
-src 目录按职责拆分：
-
-- [src/index.ts](src/index.ts)：主流程编排
-- [src/birthday.ts](src/birthday.ts)：生日计算、文案构建
-- [src/ilink.ts](src/ilink.ts)：iLink API 调用、上下文更新、runtime cache 读写
-- [src/env.ts](src/env.ts)：环境变量读取
-- [src/types.ts](src/types.ts)：类型定义
-- [birthdays.example.json](birthdays.example.json)：开源示例数据
-- [birthdays.schema.json](birthdays.schema.json)：字段规范（JSON Schema）
-- [docs/setup.html](docs/setup.html)：GitHub Pages 可视化初始化页面
-- [scripts/get-token.ts](scripts/get-token.ts)：本地 CLI 获取凭证脚本
-
-## 初始化 Bot 凭证
-
-### 方式一：GitHub Pages（可视化）
-
-<p style="color:#d1242f;font-weight:700;">⚠ 安全提示：网页方式为实验功能，当前通过 Cloudflare Worker 中转代理访问 iLink 接口。</p>
-<p style="color:#d1242f;">如果你对凭证安全要求更高，建议优先使用下方「方式二：本地 CLI（推荐）」在本机终端完成初始化。</p>
-
-1. 在仓库 Settings -> Pages 中启用 Pages
-2. 选择 Deploy from branch，分支选 `master`，目录选 `docs`
-3. 打开页面 [Birthday Bot Setup](https://mofada.github.io/birthday-bot/)
-4. 按页面提示：扫码登录 -> 微信给 Bot 发“绑定我” -> 复制结果
-
-页面会生成：
-
-- ILINK_TOKEN
-- TO_USER_ID
-- CONTEXT_TOKEN
-- BOT_BASE_URL
-
-安全提醒：
-
-- 不要截图或外传这些凭证
-- 不要提交到仓库
-- 页面只在浏览器内存展示，刷新后清空
-
-### 方式二：本地 CLI（推荐）
-
-本地 CLI 不依赖浏览器与中转代理，安全性更高，建议优先使用：
-
-	bun run get-token
-
-脚本会输出同样的凭证结果，按提示填入 Secrets。
-
-## 本地运行
-
-### 1) 安装依赖
-
-使用 Bun：
-
-	bun install
-
-### 2) 配置环境变量
-
-至少需要以下变量：
-
-- ILINK_TOKEN：iLink Bot Token
-- TO_USER_ID：要发送到的用户 ID
-- CONTEXT_TOKEN：初始上下文 Token（首次需要先给 Bot 发一条消息拿到）
-
-PowerShell 示例：
-
-	$env:ILINK_TOKEN="xxx"
-	$env:TO_USER_ID="xxx"
-	$env:CONTEXT_TOKEN="xxx"
-
-### 3) 准备生日数据（本地）
-
-首次使用先复制示例文件：
-
-	cp birthdays.example.json birthdays.json
-
-然后编辑 `birthdays.json` 填入你自己的真实数据。
-
-### 4) 运行
-
-	bun run start
-
-## GitHub Actions 自动运行
-
-定时任务文件：
-
-- [.github/workflows/birthday.yml](.github/workflows/birthday.yml)
-
-当前配置：
-
-- 每天北京时间 08:30 运行（cron 使用 UTC 表达）
-- Job 环境变量设置为 Asia/Shanghai
-- 使用 Actions Cache 保存 .runtime/state.json
-
-## 必要的 GitHub Secrets
-
-请在仓库中配置：
-
-- ILINK_TOKEN
-- TO_USER_ID
-- CONTEXT_TOKEN
-
-可选（推荐用于 Actions 注入真实生日数据）：
-
-- BIRTHDAYS_JSON
-
-说明：
-
-- 若配置了 `BIRTHDAYS_JSON`，程序优先使用该 Secret 的 JSON 内容
-- 若未配置 `BIRTHDAYS_JSON`，程序会读取仓库根目录的 `birthdays.json`
-
-可选（用于配置页/脚本输出的 base 地址，通常可不填）：
-
-- BOT_BASE_URL
-
-可选（开启自动 AI 生成时使用）：
-
-- AI_API_KEY
-- AI_BASE_URL（可选，默认 https://api.deepseek.com/v1）
-- AI_MODEL（可选，默认 deepseek-chat）
-
-## 重要提示：Context Token 有效期
-
-Context Token 是微信通过 iLink 协议返回的会话凭证，有效期约 24 小时。
-
-重要：首次接入时，无法主动获取 Context Token。只有当用户向 Bot 发送消息后，该消息中才会包含 Context Token。获得后应立即缓存，后续可使用该 Token 在 24 小时有效期内主动向用户发送消息。
-
-补充说明：
-
-- `bot_token`、`to_user_id` 可长期持久化
-- `context_token` 约 24 小时有效，过期后通常需要用户再次发送消息刷新
-- `get_updates_buf` 是消息同步游标，不会延长 `context_token` 有效期
-- 若超过 24 小时无互动，主动发送可能失败（常见返回 `ret=-2`）
-
-## 安全提醒
-
-请不要公开 ILINK_TOKEN、TO_USER_ID、CONTEXT_TOKEN、BIRTHDAYS_JSON。
-
-如果误提交，请立即重新扫码生成凭证并清理仓库历史。
-
-示例：
-
-- DeepSeek：
-	- AI_API_KEY=你的 deepseek key
-	- AI_BASE_URL=https://api.deepseek.com/v1（可选）
-	- AI_MODEL=deepseek-chat（可选）
-- 阿里通义：
-	- AI_API_KEY=你的 dashscope key
-	- AI_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-	- AI_MODEL=qwen-plus（可选）
-
-## 运行时 Token 更新机制
-
-流程如下：
-
-1. 启动后先调用 getupdates（5 秒超时）
-2. 若拉到新消息，提取最新 context_token
-3. 若没拉到，则继续使用 runtime cache 或 Secrets 里的 CONTEXT_TOKEN
-4. 每次运行都会把最新 context_token 与 get_updates_buf 写入 .runtime/state.json
-5. workflow 使用 Actions Cache 还原/保存 .runtime，实现跨次运行持久化
-
-这样下次运行会优先用上次缓存值，不需要额外 GH_PAT。
-
-## 开源推荐实践
-
-1. 仓库只提交 `birthdays.example.json` 与 `birthdays.schema.json`
-2. 本地使用 `birthdays.json` 保存真实数据，不要提交
-3. GitHub Actions 使用 `BIRTHDAYS_JSON` Secret 注入真实数据
-4. 运行缓存继续使用 Actions Cache（`.runtime`）
-
-## birthdays.json 维护规范
-
-每个成员字段顺序建议固定为：
-
-- id
-- parentId
-- spouseId
-- familyName
-- generation
-- name
-- nickName（可选）
-- relation
-- birthYear
-- gender
-- birthdayType
-- birthMonth
-- birthDay
-
-说明：
-
-字段详解：
-
-- id：成员唯一标识，建议全局唯一且稳定（例如 `m001`、`child_zhangsan`）。用于程序内部关联，不要重复。
-- parentId：父级成员的 id，用于表达家族层级关系。没有上级可留空字符串。
-- spouseId：配偶成员的 id，用于建立夫妻关联。没有配偶可留空字符串。
-- familyName：姓氏或家族名（如“张”“李”），用于展示和检索。
-- generation：辈分/代际标记（如“爷爷辈”“父母辈”“子女辈”或数字代际），建议全库口径一致。
-- name：姓名（常用名），用于生日提醒主展示字段。
-- nickName（可选）：昵称或小名（如“外婆”“小宝”），用于文案更口语化展示。
-- relation：与维护者关系（如“父亲”“母亲”“儿子”“女儿”“朋友”），用于提醒文案称谓。
-- birthYear：出生年份（四位数字，如 `1992`）。若不确定可按实际情况填近似值或约定占位值。
-- gender：性别标记，建议使用固定枚举（如 `male` / `female` / `unknown`）以便后续文案逻辑稳定。
-- birthdayType：生日历法类型，支持 `lunar`（农历）和 `solar`（阳历）。
-- birthMonth：出生月份（1-12 的整数，不补零），与 `birthdayType` 对应的历法保持一致。
-- birthDay：出生日期（1-31 的整数，不补零），与 `birthdayType` 对应的历法保持一致。
-
-匹配规则：
-
-- 当 `birthdayType=solar` 时，系统按公历 `birthMonth + birthDay` 判断是否当天生日。
-- 当 `birthdayType=lunar` 时，系统按农历 `birthMonth + birthDay` 判断是否当天生日。
-
-## 常见问题
-
-1) 没人生日为什么也收到消息？
-
-这是设计行为，用于确认定时任务和发送链路正常。
-
-2) 报错缺少 CONTEXT_TOKEN 怎么办？
-
-先给 Bot 发一条消息，再把拿到的 CONTEXT_TOKEN 配置到 Secret 或本地环境变量。
-
-3) 为什么要保存 get_updates_buf？
-
-它是增量拉取游标，不保存会反复读取旧消息。
-
-4) 配了 AI_KEY 但还是发了“复制给 AI”的 prompt？
-
-代表 AI 接口调用失败或返回为空，系统会自动回退到手动模式，避免当天消息中断。
-
-## 踩坑总结（实战经验）
-
-1) `sendmessage` 的 HTTP 200 不等于消息已送达
-
-- 需同时检查返回里的 `ret`
-- `ret=0` 才是成功
-- `ret=-2` 常见于 `context_token` 失效
-
-2) `context_token` 不是永久有效
-
-- 必须每次运行先 `getupdates` 刷新
-- 刷新失败时回退到缓存 token
-
-3) `get_updates_buf` 必须持久化
-
-- 它是增量游标（cursor）
-- 不持久化会重复读取历史消息，导致上下文混乱
-
-4) iLink 更像 IM 增量同步协议，不是简单 webhook
-
-- 建议按“轻量 IM 客户端”思路处理 `getupdates` / `cursor` / `session`
-
-5) GitHub Actions 的时间与触发特性
-
-- `cron` 使用 UTC，需要换算北京时间
-- `schedule` 可能有分钟级延迟，不保证绝对准点
-
-6) 开源场景推荐
-
-- 真实生日数据放本地文件或 `BIRTHDAYS_JSON` Secret
-- 运行时会话状态放 Actions Cache（`.runtime/state.json`）
+- [src/index.ts](src/index.ts)：每日提醒主流程（今天 + 明天）
+- [src/birthday.ts](src/birthday.ts)：生日计算（阳历/农历、今天/明天/最近、还有几天）
+- [src/commands.ts](src/commands.ts)：微信指令解析与回复
+- [src/ilink.ts](src/ilink.ts)：iLink 微信协议、token 管理
+- [scripts/add-member.ts](scripts/add-member.ts)：新增成员 CLI
+- [scripts/get-token.ts](scripts/get-token.ts)：获取凭证 CLI
+- [birthdays.example.json](birthdays.example.json)：名单示例
+- [birthdays.schema.json](birthdays.schema.json)：名单字段规范

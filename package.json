@@ -6,6 +6,7 @@
   "scripts": {
     "start": "bun run src/index.ts",
     "get-token": "bun run scripts/get-token.ts",
+    "add-member": "bun run scripts/add-member.ts",
     "check": "bun run src/check.ts",
     "check-expiry": "bun run src/check-expiry.ts",
     "listen": "bun run src/listener.ts"
@@ -18,7 +19,6 @@
   },
   "dependencies": {
     "dayjs": "^1.11.20",
-    "lunar-typescript": "^1.8.6",
-    "openai": "^4.104.0"
+    "lunar-typescript": "^1.8.6"
   }
 }

@@ -28,7 +28,6 @@ export interface FamilyMember {
   nickName?: string;
   relation: string;
   birthYear: number | null;
-  gender: "male" | "female";
   birthdayType: "solar" | "lunar";
   birthMonth: number;
   birthDay: number;

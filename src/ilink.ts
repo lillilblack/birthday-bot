@@ -8,11 +8,6 @@ import type { ILinkGetUpdatesResponse, ILinkMessage } from "./types";
 const BASE = "https://ilinkai.weixin.qq.com";
 const CHANNEL_VERSION = "0.1.0";
 const GET_UPDATES_TIMEOUT_MS = 5_000;
-// 「对方正在输入…」指示：status=1 开始、status=2 结束。
-const TYPING_START = 1;
-const TYPING_STOP = 2;
-// typing_ticket 有效期约 10 分钟，提前 1 分钟刷新，避免复用已失效的 ticket。
-const TYPING_TICKET_TTL_MS = 9 * 60 * 1000;
 // context_token 约 24h 过期、只有用户发消息才刷新；超过该小时数就主动提醒用户续命。
 const DEFAULT_EXPIRY_REMIND_HOURS = 16;
 // 运行时状态用于跨次执行复用 context_token/get_updates_buf。
@@ -271,89 +266,6 @@ export async function sendToWechat(text: string, contextToken: string) {
   return sendMessage(toUserId, contextToken, text);
 }
 
-// typing_ticket 进程内缓存：listen 常驻时避免每条消息都请求 getconfig。
-let typingTicketCache: { ticket: string; at: number } | null = null;
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/**
- * 「思考」时长（毫秒）：回复是固定文案、几乎瞬时完成，为了让微信上的
- * “对方正在输入…” 指示可见，默认人为停留约 1.2 秒。设置 THINK_DELAY_MS=0 可关闭。
- */
-function thinkDelayMs(): number {
-  const raw = process.env.THINK_DELAY_MS;
-  const parsed = raw === undefined ? 1200 : Number(raw);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 1200;
-}
-
-async function getTypingTicket(
-  token: string,
-  toUserId: string,
-  contextToken: string,
-): Promise<string | null> {
-  const now = Date.now();
-  if (typingTicketCache && now - typingTicketCache.at < TYPING_TICKET_TTL_MS) {
-    return typingTicketCache.ticket;
-  }
-
-  try {
-    const resp = (await fetch(`${BASE}/ilink/bot/getconfig`, {
-      method: "POST",
-      headers: getHeaders(token),
-      body: JSON.stringify({
-        ilink_user_id: toUserId,
-        context_token: contextToken,
-        base_info: { channel_version: CHANNEL_VERSION },
-      }),
-      signal: AbortSignal.timeout(GET_UPDATES_TIMEOUT_MS),
-    }).then((r) => r.json())) as { typing_ticket?: string };
-
-    const ticket = resp.typing_ticket;
-    if (ticket) {
-      typingTicketCache = { ticket, at: now };
-      return ticket;
-    }
-
-    console.log("getconfig 未返回 typing_ticket（跳过「正在输入」指示）");
-    return null;
-  } catch (error) {
-    console.log("getconfig 获取 typing_ticket 失败（不影响回复）:", getErrorMessage(error));
-    return null;
-  }
-}
-
-/**
- * 发送微信「对方正在输入…」指示。status=1 开始、status=2 结束。
- * 属于锦上添花，失败时静默忽略，绝不影响正常回复。
- */
-async function sendTyping(
-  toUserId: string,
-  contextToken: string,
-  status: 1 | 2,
-): Promise<void> {
-  const token = requireEnv("ILINK_TOKEN");
-  const ticket = await getTypingTicket(token, toUserId, contextToken);
-  if (!ticket) return;
-
-  try {
-    await fetch(`${BASE}/ilink/bot/sendtyping`, {
-      method: "POST",
-      headers: getHeaders(token),
-      body: JSON.stringify({
-        ilink_user_id: toUserId,
-        typing_ticket: ticket,
-        status,
-        base_info: { channel_version: CHANNEL_VERSION },
-      }),
-      signal: AbortSignal.timeout(GET_UPDATES_TIMEOUT_MS),
-    });
-  } catch (error) {
-    console.log("sendtyping 失败（不影响回复）:", getErrorMessage(error));
-  }
-}
-
 function extractText(msg: ILinkMessage): string | null {
   const item = msg.item_list?.find((it) => it.type === 1);
   return item?.text_item?.text ?? null;
@@ -402,19 +314,12 @@ export async function checkAndReply(): Promise<void> {
     const text = extractText(msg);
     if (!text) continue;
 
-    const reply = answerForMessage(text, list);
-
-    // 先亮起「对方正在输入…」，短暂停留让指示可见，再回复并关闭。
-    await sendTyping(msg.from_user_id, msg.context_token, TYPING_START);
     try {
-      const delay = thinkDelayMs();
-      if (delay > 0) await sleep(delay);
+      const reply = await answerForMessage(text, list);
       await sendMessage(msg.from_user_id, msg.context_token, reply);
       replied++;
     } catch (error) {
       console.error("回复失败:", getErrorMessage(error));
-    } finally {
-      await sendTyping(msg.from_user_id, msg.context_token, TYPING_STOP);
     }
 
     latestContextToken = msg.context_token;

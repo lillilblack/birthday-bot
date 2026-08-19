@@ -14,7 +14,6 @@
       "name",
       "relation",
       "birthYear",
-      "gender",
       "birthdayType",
       "birthMonth",
       "birthDay"
@@ -53,10 +52,6 @@
         "type": ["integer", "null"],
         "minimum": 1900,
         "maximum": 2100
-      },
-      "gender": {
-        "type": "string",
-        "enum": ["male", "female"]
       },
       "birthdayType": {
         "type": "string",
