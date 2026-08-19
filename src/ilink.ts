@@ -7,7 +7,7 @@ import type { ILinkGetUpdatesResponse, ILinkMessage } from "./types";
 
 const BASE = "https://ilinkai.weixin.qq.com";
 const CHANNEL_VERSION = "0.1.0";
-const GET_UPDATES_TIMEOUT_MS = 5_000;
+const GET_UPDATES_TIMEOUT_MS = 20_000;
 // context_token 约 24h 过期、只有用户发消息才刷新；超过该小时数就主动提醒用户续命。
 const DEFAULT_EXPIRY_REMIND_HOURS = 16;
 // 运行时状态用于跨次执行复用 context_token/get_updates_buf。
